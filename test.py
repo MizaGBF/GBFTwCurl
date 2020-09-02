@@ -9,29 +9,40 @@ import requests
 from requests_oauthlib import OAuth1, OAuth1Session
 from requests import models
 import signal
+import webbrowser
 
-
-class OAuthHandler():
-    OAUTH_HOST = 'api.twitter.com'
-    OAUTH_ROOT = '/oauth/'
-
+class Stream():
     def __init__(self, keys):
-        self.consumer_key = keys['consumer_key']
-        self.consumer_secret = keys['consumer_secret']
-        self.access_token = keys.get('access_token', None)
-        self.access_token_secret = keys.get('access_token_secret', None)
-        self.username = None
+        self.keys = keys
+        self.track = {'track': " :参戦ID\n参加者募集！\n, :Battle ID\nI need backup!\nLvl"}
+        self.url = 'https://stream.twitter.com/1.1/statuses/filter.json?' + urlencode(self.track)
         self.request_token = {}
-        self.oauth = OAuth1Session(self.consumer_key, client_secret=self.consumer_secret)
+        self.oauth = OAuth1Session(self.keys['consumer_key'], client_secret=self.keys['consumer_secret'])
+        self.conn = None
+        self.buffer = b''
+        self.running = True
+
+        signal.signal(signal.SIGINT, self.ctrlC)
+
+    def ctrlC(self, sig, frame):
+        self.running = False
+        raise Exception()
+
+    def authentificate_web():
+        webbrowser.open(self.get_auth_url(), new=2)
+        pin = input()
+        t = self.get_access_token(pin)
+        print("Access tokens:", t)
+        return t
 
     def _get_oauth_url(self, endpoint):
-        return 'https://' + self.OAUTH_HOST + self.OAUTH_ROOT + endpoint
+        return 'https://self.api.twitter.com/oauth/' + endpoint
 
     def apply_auth(self):
-        return OAuth1(self.consumer_key,
-                      client_secret=self.consumer_secret,
-                      resource_owner_key=self.access_token,
-                      resource_owner_secret=self.access_token_secret,
+        return OAuth1(self.keys['consumer_key'],
+                      client_secret=self.keys['consumer_secret'],
+                      resource_owner_key=self.keys['access_token'],
+                      resource_owner_secret=self.keys['access_token_secret'],
                       decoding=None)
 
     def _get_request_token(self, access_type=None):
@@ -44,19 +55,12 @@ class OAuthHandler():
             raise e
 
     def set_access_token(self, key, secret):
-        self.access_token = key
-        self.access_token_secret = secret
+        self.keys['access_token'] = key
+        self.keys['access_token_secret'] = secret
 
-    def get_authorization_url(self,
-                              signin_with_twitter=False,
-                              access_type=None):
+    def get_authorization_url(self):
         try:
-            if signin_with_twitter:
-                url = self._get_oauth_url('authenticate')
-                if access_type:
-                    log.warning(WARNING_MESSAGE)
-            else:
-                url = self._get_oauth_url('authorize')
+            url = self._get_oauth_url('authorize')
             self.request_token = self._get_request_token(access_type=access_type)
             return self.oauth.authorization_url(url)
         except Exception as e:
@@ -69,11 +73,11 @@ class OAuthHandler():
 
     def get_access_token(self, verifier=None):
         url = self._get_oauth_url('access_token')
-        self.oauth = OAuth1Session(self.consumer_key, client_secret=self.consumer_secret, resource_owner_key=self.request_token['oauth_token'], resource_owner_secret=self.request_token['oauth_token_secret'], verifier=verifier)
+        self.oauth = OAuth1Session(self.keys['consumer_key'], client_secret=self.keys['consumer_secret'], resource_owner_key=self.request_token['oauth_token'], resource_owner_secret=self.request_token['oauth_token_secret'], verifier=verifier)
         resp = self.oauth.fetch_access_token(url)
-        self.access_token = resp['oauth_token']
-        self.access_token_secret = resp['oauth_token_secret']
-        return self.access_token, self.access_token_secret
+        self.keys['access_token'] = resp['oauth_token']
+        self.keys['access_token_secret'] = resp['oauth_token_secret']
+        return self.keys['access_token'], self.keys['access_token_secret']
 
     def verify_credentials(self):
         r = requests.get(url="https://api.twitter.com/1.1/account/verify_credentials.json", auth=self.apply_auth())
@@ -83,51 +87,25 @@ class OAuthHandler():
 
     def get_oauth_header(self):
         r = models.PreparedRequest()
-        url = "https://stream.twitter.com/1.1/statuses/filter.json?" + urlencode({'track': " :参戦ID\n参加者募集！\n, :Battle ID\nI need backup!\nLvl"})
-        r.prepare(method="POST", url=url, params={'track': " :参戦ID\n参加者募集！\n, :Battle ID\nI need backup!\nLvl"})
+        r.prepare(method="POST", url=self.url, params=self.track)
         o = self.apply_auth()
         o(r)
         return r.headers['Authorization']
-        
-
-class Stream():
-    def __init__(self, keys):
-        self.keys = keys
-        self.conn = None
-        self.buffer = b''
-        self.auth = OAuthHandler(self.keys)
-        self.running = True
-        # authentificate (request tokens)
-        """print(self.auth.get_auth_url())
-        pin = input()
-        print(self.auth.get_access_token(pin))"""
-        # test 1
-        if not self.auth.verify_credentials():
-            print("failed to authentificate, press Return")
-            input()
-            exit(0)
-
-        signal.signal(signal.SIGINT, self.ctrlC)
-
-    def ctrlC(self, sig, frame):
-        self.running = False
-        raise Exception()
 
     def start(self):
         while self.running:
             if self.conn:
                 self.conn.close()
                 self.buffer = b''
-            url = 'https://stream.twitter.com/1.1/statuses/filter.json?' + urlencode({'track': " :参戦ID\n参加者募集！\n, :Battle ID\nI need backup!\nLvl"})
 
             self.conn = pycurl.Curl()
             self.conn.setopt(pycurl.SSL_VERIFYPEER, 1)
             self.conn.setopt(pycurl.SSL_VERIFYHOST, 2)
             self.conn.setopt(pycurl.CAINFO, certifi.where())
-            self.conn.setopt(pycurl.URL, url)
-            self.conn.setopt(pycurl.POSTFIELDS, urlencode({'track': " :参戦ID\n参加者募集！\n, :Battle ID\nI need backup!\nLvl"}))
+            self.conn.setopt(pycurl.URL, self.url)
+            self.conn.setopt(pycurl.POSTFIELDS, urlencode(self.track))
             self.conn.setopt(pycurl.VERBOSE, 1)
-            self.conn.setopt(pycurl.HTTPHEADER, ['Host: stream.twitter.com', 'Authorization: %s' % self.auth.get_oauth_header()])
+            self.conn.setopt(pycurl.HTTPHEADER, ['Host: stream.twitter.com', 'Authorization: %s' % self.get_oauth_header()])
             self.conn.setopt(pycurl.WRITEFUNCTION, self.handle_tweet)
 
             backoff_network_error = 0.25
@@ -184,5 +162,7 @@ s = Stream({'consumer_key': "",
             'consumer_secret': "",
             'access_token': "",
             'access_token_secret': ""})
-
-s.start()
+if not s.verify_credentials():
+    print("failed to authentificate")
+else:
+    s.start()
